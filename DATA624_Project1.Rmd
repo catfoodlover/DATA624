@@ -1,0 +1,440 @@
+---
+title: "DATA624_Project1"
+author: "William Aiken"
+date: "10/26/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(fpp3)
+library(dplyr)
+library(fable)
+library(caret)
+```
+
+### Part A – ATM Forecast, ATM624Data.xlsx
+
+In part A, I want you to forecast how much cash is taken out of 4 different ATM machines for May 2010.  The data is given in a single file.  The variable ‘Cash’ is provided in hundreds of dollars, other than that it is straight forward.   I am being somewhat ambiguous on purpose to make this have a little more business feeling.  Explain and demonstrate your process, techniques used and not used, and your actual forecast.  I am giving you data via an excel file, please provide your written report on your findings, visuals, discussion and your R code via an RPubs link along with the actual.rmd file  Also please submit the forecast which you will put in an Excel readable file.
+
+##### We are going to start by reading in the data and doing doing some basic exploration of the data.
+
+```{r}
+library(readxl)
+temp <- readxl::read_xlsx("/Users/williamaiken/DATA624/HW/ATM624Data.xlsx")
+```
+
+First it is helpful to inspect the head of the data set.  I like the dplyr 'glimpse' function for this.  The date does make a lot of sense.  I thought it might be using the Unix Epoch (days since 1970) but that doesn't appear to be the case because the numbers are too big for that.  In the end it doesn't really matter as long as they are ordered.  I did a count on the dates and there are no more than 4 events for a given date.
+
+```{r}
+dplyr::glimpse(temp)
+```
+
+Just to get a sense of the missing values I like to start by getting a count of the missing values.  So we are missing 19 'Cash' values and 14 'ATM' values.  The missing ATM values are the 14 days at the end of the data set that we will forecast.
+
+```{r}
+sum(is.na(temp$Cash))
+sum(is.na(temp$ATM))
+temp |> filter(is.na(Cash))
+```
+
+When we look at ATM4 we see that the 'Cash' values are larger than the other ATMs and that the values are given with an unusual amount of precision.  It's possible that this ATM is not in US dollars or that it is a foreign atm that is converting the amount into US dollars?
+
+```{r}
+dplyr::glimpse(temp |> filter(ATM == 'ATM4'))
+```
+
+We have limited or histogram to ATM withdraws less than $1500 for ease of visualization.  The fact that this limit has to be used means that we may have some bad values in our data set that may need to addressed.  Most banks set a limit of how much money can be removed from an ATM to prevent fraud (300-3000).  We can see that the distributions of the ATMs are all very different, particularly ATM 4.  It would not be appropriate to take the average across the ATMs and create one model.  Each ATM should be modeled separately.
+
+```{r}
+library(ggplot2)
+library(dplyr)
+ggplot(temp %>% filter(!is.na(ATM) & Cash < 1500), aes(Cash, fill = ATM)) + geom_histogram(alpha = 0.5, aes(y = ..density..), position = 'identity')
+```
+
+Before we do any fixing of the data, I want to visualize the data as time series.  
+
+```{r}
+temp2 <- as_tsibble(temp, index = 'DATE', key = 'ATM')
+autoplot(temp2)
+```
+We need to visualize these plots separately to really see what is going on.  In the ATM1 plot we see no trend but possibly a seasonality.  This would make sense for an ATM that was commonly used during the week but not on weekends.
+
+#### ATM1
+
+```{r}
+temp2 |> filter(ATM == 'ATM1') |> autoplot()
+```
+Let's start by replacing the missing values with the mean and then using classical decomposition to inspect the trend and seasonality.  
+
+I recognize that it would be better to calculate the mean of the day of the week of the missing value but we are missing so few values that I don't think that just using the mean will impact our forecasts that much.
+
+```{r}
+atm1_df <- temp2 |> filter(ATM == 'ATM1')
+
+atm1_df <- atm1_df %>% mutate(Cash = if_else(is.na(Cash), mean(Cash, na.rm = TRUE), Cash))
+```
+
+We can see that there is no real trend but there is a seasonal component which we are not fully capturing because we see that the 'random' component is not fully random.
+
+```{r}
+  atm1_df |>model(
+    classical_decomposition(Cash ~ season(7), type = "multiplicative")
+  ) |>
+  components() |>
+  autoplot() +
+  labs(title = "Classical additive decomposition of ATM1")
+```
+
+##### ATM1 Model Selection
+
+We are going use the 'model' function to find the ETS model that best fits the data.  The best ETS model in Multiplicative Error, No Trend, No Seasonal.
+
+
+```{r}
+fit <- atm1_df %>% model(ETS(Cash))
+
+report(fit)
+```
+
+The automatic model selection is not picking up on the seasonal component.  If we explicitly set the period we can add a seasonal component and we get a lower AIC.
+
+```{r}
+fit <- atm1_df %>% model(ETS(Cash ~ error("M") + trend("N") + season("M", period = 7)))
+
+report(fit)
+```
+
+
+Next we are going to inspect the model residuals.  The innovation residuals look like white note except at the end.  The distribution of the residuals looks normal.
+
+
+```{r}
+fit |> gg_tsresiduals()
+```
+
+##### ATM1 Forecasting
+
+```{r}
+fc <- atm1_df %>% model(ETS(Cash ~ error("M") + trend("N") + season("M", period = 7))) %>% forecast(h=14)
+  
+fc %>% autoplot(atm1_df)
+
+ATM1 <- fc$.mean
+```
+
+#### ATM2
+
+For ATM2, I see no apparent trend but possibly a seasonality.
+
+```{r}
+temp2 |> filter(ATM == 'ATM2') |> autoplot()
+```
+
+```{r}
+atm2_df <- temp2 |> filter(ATM == 'ATM2')
+
+atm2_df <- atm2_df %>% mutate(Cash = if_else(is.na(Cash), mean(Cash, na.rm = TRUE), Cash))
+```
+
+```{r}
+  atm2_df |>model(
+    classical_decomposition(Cash ~ season(7), type = "multiplicative")
+  ) |>
+  components() |>
+  autoplot() +
+  labs(title = "Classical additive decomposition of ATM2")
+```
+##### ATM2 Model Selection
+
+Here we fit our model using the model selected automatically with and added seasonal component.
+
+```{r}
+fit <- atm2_df %>% model(ETS(Cash ~ error("A") + trend("A") + season("A", period = 7)))
+
+report(fit)
+```
+
+Next we are going to inspect the model residuals.  The innovation residuals looke like white noise and residual distribution looks normal.
+
+
+```{r}
+fit |> gg_tsresiduals()
+```
+
+##### ATM@ Forecasting
+
+Now we forecast for the next two weeks using our selected AAA model.  Our confidence intervals include nonesense values (amounts less than 0).
+
+```{r}
+fc <- atm2_df %>%model(ETS(Cash ~ error("A") + trend("A") + season("A", period = 7))) %>% forecast(h=14)
+  
+fc %>% autoplot(atm2_df)
+
+ATM2 <- fc$.mean
+```
+
+#### ATM3
+
+Oh boy, ATM3 is going to be tricky.  There are only three cash values for ATM3 at the very end of the series.  It's possible that ATM3 was only put into service at the very end of the series. We could assume that there is the same seasonal trend as ATM1 and ATM2.  I think that the forecasts for ATM1 could be used for ATM3 since the last three values for ATM1 and ATM3 are the same.
+
+```{r}
+temp2 |> filter(ATM == 'ATM3') |> autoplot()
+```
+
+```{r}
+atm3_df <- temp2 |> filter(ATM == 'ATM3')
+
+atm3_df <- atm3_df %>% mutate(Cash = if_else(is.na(Cash), mean(Cash, na.rm = TRUE), Cash))
+```
+
+```{r}
+  atm3_df |>model(
+    classical_decomposition(Cash ~ season(7), type = "multiplicative")
+  ) |>
+  components() |>
+  autoplot() +
+  labs(title = "Classical additive decomposition of ATM3")
+```
+
+#### ATM4
+
+For ATM4, there is one outlier that is almost an order of magnitude greater than any other value in the data set (10919.76). We are going to replace that one value with the mean.
+
+```{r}
+temp2 |> filter(ATM == 'ATM4') |> autoplot()
+```
+
+
+```{r}
+atm4_df <- temp2 |> filter(ATM == 'ATM4')
+
+atm4_df <- atm4_df %>% mutate(Cash = if_else(Cash == max(Cash, na.rm = TRUE), mean(Cash, na.rm = TRUE), Cash))
+```
+
+```{r}
+  atm4_df |>model(
+    classical_decomposition(Cash ~ season(7), type = "multiplicative")
+  ) |>
+  components() |>
+  autoplot() +
+  labs(title = "Classical additive decomposition of ATM4")
+```
+
+##### ATM4 Model Selection
+
+```{r}
+fit <- atm4_df %>% model(ETS(Cash ~ error("A") + trend("N") + season("A", period = 7)))
+
+report(fit)
+```
+
+Next we are going to inspect the model residuals.  The residuals don't look centered on zero so we are going to apply Box-Cox transformation.
+
+```{r}
+fit |> gg_tsresiduals()
+```
+
+##### ATM4 Transformation
+
+```{r}
+atm_trans <- as.data.frame(atm4_df)
+bc_trans <- preProcess(atm_trans["Cash"], method = c("BoxCox"))
+transformed <- predict(bc_trans, atm_trans["Cash"])
+
+atm_trans$Cash_t <- transformed$Cash
+
+atm_trans <- as_tsibble(atm_trans, index = 'DATE')
+
+atm_trans |> autoplot(Cash_t)
+```
+
+Our Lamda is 0.4 which we will need to back transform the forecasts at the end
+
+```{r}
+bc_trans$bc
+```
+
+Now we are going to fit our ETS model, in all the ATM data set the model function was not able to detect the seasonal trend which highlights the importance of visualizing the data before model selection.
+
+```{r}
+fit <- atm_trans %>% model(ETS(Cash_t ~ error("A") + trend("N") + season("A", period = 7)))
+
+report(fit)
+```
+
+
+The residuals are more normally distributed.
+
+
+```{r}
+fit |> gg_tsresiduals()
+```
+
+##### ATM Forecasting
+
+Now we are going to do our forcasting using a model that we manually selected by taking the model selected by the model function and adding a seasonal component.
+
+```{r}
+fc <- atm4_df %>% model(ETS(Cash ~ error("A") + trend("N") + season("A", period = 7))) %>% forecast(h=14)
+  
+fc %>% autoplot(atm4_df)
+```
+
+Now we need to back transform our forecasts.  This function comes from a solution that Rob Hyndman posted on StackExchange.
+
+[StackExchange](https://stats.stackexchange.com/questions/572400/inverse-differencing-and-inverse-box-cox-on-forecasted-arima-predictions)
+
+```{r}
+boxinvTransform <- function(y, lambda) {
+  if (lambda == 0L) { exp(y) }
+  else { (y * lambda + 1)^(1/lambda) }
+}
+
+fc_t <- fc$.mean
+
+ATM4 <- boxinvTransform(fc_t, 0.4)
+```
+
+Now we are going to join all of our forecasts and save them out.  I'm making the choice to round the predictions for ATM1, ATM2, ATM3 because the values in the original data was given to me a whole dollar amounts.
+
+Upon inspection our forecasts look reasonable given the original data.
+
+```{r}
+ATM3 <- round(ATM1)
+ATM1 <- round(ATM1)
+ATM2 <- round(ATM2)
+
+forecast_part1 <- bind_cols(ATM1, ATM2, ATM3, ATM4)
+names(forecast_part1) <- c("ATM1", "ATM2", "ATM3", "ATM4")
+```
+
+```{r}
+#write_excel_csv(forecast_part1, "forecast_part1.csv")
+```
+
+### Part B – Forecasting Power, ResidentialCustomerForecastLoad-624.xlsx
+
+Part B consists of a simple dataset of residential power usage for January 1998 until December 2013.  Your assignment is to model these data and a monthly forecast for 2014.  The data is given in a single file.  The variable ‘KWH’ is power consumption in Kilowatt hours, the rest is straight forward.    Add this to your existing files above.
+
+```{r}
+pwr_df <- readxl::read_xlsx('/Users/williamaiken/DATA624/HW/ResidentialCustomerForecastLoad-624.xlsx')
+```
+
+```{r}
+glimpse(pwr_df)
+```
+
+We have one missing value that will have to be dealt with.
+
+```{r}
+sum(is.na(pwr_df$KWH))
+```
+
+Let's examine a histogram of the KWH.  We find a distribution that is approximately normal centered around 6 million KWH.
+
+```{r}
+ggplot(pwr_df, aes(KWH, fill = KWH)) + geom_histogram(alpha = 0.5, aes(y = ..density..), position = 'identity')
+```
+Next let's examine the time series of KWH.  This data has both a postive trend and a seasonal component.  We can see there is an outlier value in ~2011
+
+If you don't use the 'yearmonth' function, you run into issues when you try to do the classical decomposition in a few steps.
+
+```{r}
+pwr_df$date <- yearmonth(as.character(pwr_df$'YYYY-MMM'))
+pwr_df <- as_tsibble(pwr_df |> select(date, KWH), index = 'date')
+pwr_df |> autoplot()
+```
+
+We need to fix the missing value.  We are going to replace the missing value with the mean.
+
+```{r}
+pwr_df <- pwr_df |> mutate(KWH = ifelse(is.na(KWH), mean(KWH, na.rm = TRUE), KWH), year = lubridate::year(date))
+```
+
+Let's use classical decomposition to understand the data a little better
+
+```{r}
+  pwr_df |>model(
+    classical_decomposition(KWH ~ season(12), type = "multiplicative")
+  ) |>
+  components() |>
+  autoplot() +
+  labs(title = "Classical additive decomposition of KWH")
+```
+
+```{r}
+pwr_df <- pwr_df %>% mutate(KWH = ifelse(KWH == min(KWH, na.rm = TRUE), mean(KWH, na.rm = TRUE), KWH))
+```
+
+
+We are going to use Exponential Smoothing to for our forecasting.  We are going use the 'model' function to select the optimal ETS model.
+
+The model selected is a ETS(M,N,M) model which is multiplicative error, No trend, multiplicative seasonality.
+
+```{r}
+fit <- pwr_df %>% model(ETS(KWH))
+
+report(fit)
+```
+
+Next we are going to inspect the model residuals
+
+```{r}
+fit |> gg_tsresiduals()
+```
+
+The residuals show us that the data could benefit from some transformation.  Our lambda is -0.3 which we will need later for the back transformation.
+
+```{r}
+pwr_trans <- as.data.frame(pwr_df)
+bc_trans <- preProcess(pwr_trans["KWH"], method = c("BoxCox"))
+transformed <- predict(bc_trans, pwr_trans["KWH"])
+
+pwr_trans$KWH_t <- transformed$KWH
+
+pwr_trans <- as_tsibble(pwr_trans, index = 'date')
+
+pwr_trans |> autoplot(KWH_t)
+```
+
+We select our model after transformation which thankfully picks up the seasonal component (MAM).  When we look at the AIC, the temptation is to freakout thinking that we have done something wrong.  When you have log transformed the data it is possible to get a negative AIC.
+
+```{r}
+fit2 <- pwr_trans %>% model(ETS(KWH_t))
+
+report(fit2)
+```
+
+The innovation residuals look like white noise and the distribution of the residuals looks normal.
+
+```{r}
+fit2 |> gg_tsresiduals()
+```
+
+Lastly we are going to perform forecasting with our selected model and then transform our forecasts back to the original scale.
+
+```{r}
+fc <- pwr_trans %>% model(ETS(KWH_t)) %>% forecast(h=24)
+  
+fc %>% autoplot(pwr_trans)
+```
+
+These forecasts look reasonable when compared to the original data.
+
+```{r}
+fc_t <- fc$.mean
+
+forecast_part2 <- boxinvTransform(fc_t, -0.3)
+
+forecast_part2 <- round(forecast_part2)
+
+forecast_part2 <- as.data.frame(forecast_part2)
+```
+
+```{r}
+#write_excel_csv(forecast_part2, "forecast_part2.csv")
+```
+
+Takeaways from this project.  The model selection looks easy but requires you to understand the original data to verify that the model selected makes sense give the properties of the data.  The most time is spent understanding the data, cleaning and transforming the data.  Decisions will be have to be made but it's important that your logic and choices are clear to your audience.
+
