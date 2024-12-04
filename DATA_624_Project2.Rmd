@@ -1,0 +1,282 @@
+---
+
+title: "Project 2"
+
+author: "Deepa Sharma/William Aiken"
+
+date: "2024-11-13"
+
+output: html_document
+
+---
+
+```{r include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE) 
+
+library(corrplot)
+
+library(reshape2)
+
+library(ggplot2)
+
+library(dplyr)
+
+library(knitr)
+
+library(magrittr)
+
+library(corrplot)
+
+```
+
+## Data Acquisition
+
+Here we can preview the data structure:
+
+```{r}
+
+student_train = read.csv('https://raw.githubusercontent.com/deepasharma06/Data-624/refs/heads/main/StudentData_training.csv')
+
+student_eval = read.csv('https://raw.githubusercontent.com/deepasharma06/Data-624/refs/heads/main/StudentEvaluation_test.csv')
+
+head(student_train) %>% kable()
+
+```
+
+## Missing values
+
+```{r}
+
+colSums(is.na(student_train))
+
+```
+
+## Correlation Plot
+
+```{r}
+
+# Select only numeric columns
+
+numeric_data <- student_train %>% select(where(is.numeric))
+
+# Calculate the correlation matrix
+
+correlation_matrix <- cor(numeric_data, use = "pairwise.complete.obs")
+
+# Create the correlation plot
+
+corrplot(correlation_matrix, tl.col = "black", tl.cex = 0.6, order = 'AOE')
+
+```
+
+## Distribution Visualization
+
+```{r, echo = F, warning = F, message = F}
+
+# Load necessary packages
+
+library(reshape2)  # For melt
+
+library(ggplot2)   # For ggplot
+
+mlt.train <- student_train  
+
+mlt.train$ID <- rownames(mlt.train)  
+
+mlt.train <- melt(mlt.train, id.vars = "ID")  # Melt the data
+
+# Convert the value column to numeric
+
+mlt.train$value <- as.numeric(mlt.train$value)
+
+# Create histograms of the predictors
+
+ggplot(data = mlt.train, aes(x = value)) +
+
+  geom_histogram(binwidth = 4) +  # Adjust binwidth as needed
+
+  facet_wrap(~ variable, scales = "free") +
+
+  labs(title = "Distributions of Predictors", x = "Predictors")
+
+```
+
+```{r}
+
+mlt.train <- student_train  # Use your actual dataframe name
+
+mlt.train$ID <- rownames(mlt.train)  # Assign row names to ID
+
+mlt.train <- melt(mlt.train, id.vars = "ID")  # Melt the data
+
+# Convert the value column to numeric
+
+mlt.train$value <- as.numeric(mlt.train$value)
+
+# Create histograms of the predictors
+
+ggplot(data = mlt.train, aes(x = value)) +
+
+  geom_histogram(binwidth = 6, fill = "skyblue", color = "black", alpha = 0.8) +  # Adjust binwidth as needed
+
+  facet_wrap(~ variable, scales = "free") +
+
+  labs(title = "Distributions of Predictors", x = "Predictors", y = "Frequency") +
+
+  theme_minimal(base_size = 9) +  # Use a minimal theme for better clarity
+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())  # Clean up grid lines
+
+```
+
+##### Build initial linear regression model and access the VIF
+
+```{r}
+library(car)
+library(caret)
+# Setting up the model
+
+model <- lm(PH ~ ., data = student_train)
+summary(model)
+```
+
+##### We see that 'Brand.Code' is highly collinear
+
+```{r}
+# Calculating VIF
+vif_values <- vif(model)
+vif_values
+```
+
+
+##### We see that Brand B appears to have a different relationship than the other brands, Brand B has a R-squared of ~0.7 while all the other brands have a R-squared of ~0.3.  We can replace all the brands with a binary variable of whether it is Brand B or not.
+
+##### I'm also replacing all the missing values with zeros
+
+```{r}
+student_train_0 <- student_train |> mutate(BCB = as.numeric(Brand.Code =='B')) |> select(-Brand.Code)
+student_eval_0 <- student_eval |> mutate(BCB = as.numeric(Brand.Code =='B')) |> select(-Brand.Code)
+
+student_train_0[is.na(student_train_0)] <- 0
+student_eval_0[is.na(student_eval_0)] <- 0
+```
+
+##### Next we check if any of the variables have a near zero variance and surprisingly only one variable is identified by default.  I changed the parameters 'freqCut' and 'uniqueCut' but it required large changes to pick up other variables.
+
+```{r}
+nearZeroVar(student_train_0, freqCut = 60/40, uniqueCut = 40, names = TRUE)
+```
+
+##### Just by removing the 'Brand.Code' variable we reduce a lot of the multicollinearity.  Here I create a new linear model without 'Brand.Code' and check the VIF again.
+
+
+```{r}
+model <- lm(PH ~ ., data = student_train_0)
+summary(model)
+```
+
+```{r}
+# Calculating VIF
+vif_values <- vif(model)
+vif_values
+```
+
+##### There are still a couple variables to be addressed but first we are going to a step-wise feature reduction.  
+
+```{r}
+stats::step(model)
+```
+
+##### We reduce our predictors to just those remaining after the feature reduction.
+
+```{r}
+student_train_1 <- student_train_0 |> select(PH, PC.Volume , PSC.Fill , Mnf.Flow , Carb.Pressure1 , 
+    Fill.Pressure , Hyd.Pressure2 , Hyd.Pressure4 , Filler.Level , 
+    Temperature , Usage.cont , Carb.Flow , MFR , Balling , 
+    Pressure.Vacuum , Oxygen.Filler , Bowl.Setpoint , Alch.Rel , 
+    Carb.Rel , Balling.Lvl , BCB)
+
+student_eval_1 <- student_eval_0 |> select(PH, PC.Volume , PSC.Fill , Mnf.Flow , Carb.Pressure1 , 
+    Fill.Pressure , Hyd.Pressure2 , Hyd.Pressure4 , Filler.Level , 
+    Temperature , Usage.cont , Carb.Flow , MFR , Balling , 
+    Pressure.Vacuum , Oxygen.Filler , Bowl.Setpoint , Alch.Rel , 
+    Carb.Rel , Balling.Lvl , BCB)
+
+model <- lm(PH ~ ., data = student_train_1)
+summary(model)
+```
+
+##### We evaluate the VIF again and see that Balling.Lvl and Balling are collinear, I created a new predictor by dividing Balling.Lvl by Balling.
+
+```{r}
+# Calculating VIF
+vif_values <- vif(model)
+vif_values
+```
+
+
+
+```{r}
+# Visualizing the model
+#plot(model, which = 1, main = "Model Fit")
+```
+
+
+```{r}
+student_train_2 <- student_train_1 |> mutate(PT = Balling.Lvl/Balling) |> select(-c(Balling, Balling.Lvl))
+
+student_eval_2 <- student_eval_1 |> mutate(PT = Balling.Lvl/Balling) |> select(-c(Balling, Balling.Lvl))
+
+model <- lm(PH ~ ., data = student_train_2)
+summary(model)
+```
+
+##### This resolves our collinearity but our model still has terrible performance so we are going to build some MARS models to capture some of the nonlinear relationships
+
+```{r}
+# Calculating VIF
+vif_values <- vif(model)
+vif_values
+```
+
+```{r}
+student_train_2[is.na(student_train_2)] <- 0
+library(earth)
+y = student_train_2$PH
+x = student_train_2 |> select(-PH)
+marsFit <- earth(x, y)
+summary(marsFit)
+```
+
+```{r}
+plotmo(marsFit)
+```
+
+##### We are going to add some 2nd order relationships and we get an R-squared of 0.89
+
+```{r}
+student_train_2[is.na(student_train_2)] <- 0
+library(earth)
+y = student_train_2$PH
+x = student_train_2 |> select(-PH)
+
+y_eval = student_eval_2$PH
+x_eval = student_eval_2 |> select(-PH)
+
+marsFit2 <- earth(x, y, degree = 2)
+summary(marsFit2)
+```
+
+```{r}
+plotmo(marsFit2)
+```
+
+##### Lastly we make some predictions with our evaluation dataset
+
+```{r}
+#library(Metrics)
+preds <- stats::predict(marsFit2, student_eval_2)
+```
+
+
