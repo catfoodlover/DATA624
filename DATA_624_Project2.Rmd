@@ -149,6 +149,48 @@ vif_values <- vif(model)
 vif_values
 ```
 
+##### We can limit to individual brands and see if the same linear relationship exists for all the brands
+
+##### Brand A
+
+```{r}
+student_train_0 <- student_train
+student_train_0[is.na(student_train_0)] <- 0
+modelA <- lm(PH ~ ., data = student_train_0 |> filter(Brand.Code == 'A') |> select(-Brand.Code))
+summary(modelA)$r.squared
+Brand_A <- summary(modelA)$r.squared
+```
+##### Brand B
+
+```{r}
+#student_train_0[is.na(student_train_0)] <- 0
+modelB <- lm(PH ~ ., data = student_train_0 |> filter(Brand.Code == 'B') |> select(-Brand.Code))
+summary(modelB)$r.squared
+Brand_B <- summary(modelB)$r.squared
+```
+##### Brand C
+
+```{r}
+modelC <- lm(PH ~ ., data = student_train_0 |> filter(Brand.Code == 'C') |> select(-Brand.Code))
+summary(modelC)$r.squared
+Brand_C <- summary(modelC)$r.squared
+```
+##### Brand D
+
+```{r}
+modelD <- lm(PH ~ ., data = student_train_0 |> filter(Brand.Code == 'D') |> select(-Brand.Code))
+summary(modelD)$r.squared
+Brand_D <- summary(modelD)$r.squared
+```
+
+```{r}
+r_squared <- c(Brand_A, Brand_B, Brand_C, Brand_D)
+names <- c('A', 'B', 'C', 'D')
+r_squared <- bind_cols(names, r_squared)
+kableExtra::kable(r_squared, col.names = c('Brands', 'R-squared'))
+```
+
+
 
 ##### We see that Brand B appears to have a different relationship than the other brands, Brand B has a R-squared of ~0.7 while all the other brands have a R-squared of ~0.3.  We can replace all the brands with a binary variable of whether it is Brand B or not.
 
