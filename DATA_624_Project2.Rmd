@@ -41,7 +41,7 @@ student_train = read.csv('https://raw.githubusercontent.com/deepasharma06/Data-6
 student_eval = read.csv('https://raw.githubusercontent.com/deepasharma06/Data-624/refs/heads/main/StudentEvaluation_test.csv')
 
 head(student_train) %>% kable()
-
+head(student_eval) %>% kable()
 ```
 
 ## Missing values
@@ -154,8 +154,9 @@ vif_values
 ##### Brand A
 
 ```{r}
+library(tidyverse)
 student_train_0 <- student_train
-student_train_0[is.na(student_train_0)] <- 0
+student_train_0 <- student_train %>% mutate(across(everything(), ~replace_na(.x, median(na.omit(.)))))
 modelA <- lm(PH ~ ., data = student_train_0 |> filter(Brand.Code == 'A') |> select(-Brand.Code))
 summary(modelA)$r.squared
 Brand_A <- summary(modelA)$r.squared
@@ -199,7 +200,7 @@ kableExtra::kable(r_squared, col.names = c('Brands', 'R-squared'))
 ```{r}
 student_train_0 <- student_train |> mutate(BCB = as.numeric(Brand.Code =='B')) |> select(-Brand.Code)
 student_eval_0 <- student_eval |> mutate(BCB = as.numeric(Brand.Code =='B')) |> select(-Brand.Code)
-
+#student_train <- student_train %>% mutate(across(everything(), ~replace_na(.x, median(na.omit(.)))))
 student_train_0[is.na(student_train_0)] <- 0
 student_eval_0[is.na(student_eval_0)] <- 0
 ```
@@ -298,21 +299,141 @@ plotmo(marsFit)
 ##### We are going to add some 2nd order relationships and we get an R-squared of 0.89
 
 ```{r}
-student_train_2[is.na(student_train_2)] <- 0
+library(tidyverse)
+library(DescTools)
+
+student_train$Brand.Code[student_train$Brand.Code == ''] <- 'Unk'
+BC <- student_train |> select(Brand.Code)
+student_train <- student_train |> select(-Brand.Code)
+
+student_train <- student_train %>% mutate(across(everything(), ~replace_na(.x, median(na.omit(.)))))
+student_train <- student_train |> mutate(Hyd.Pressure10 = as.numeric(Hyd.Pressure1 == 0), Hyd.Pressure20 = as.numeric(Hyd.Pressure2 == 0), Hyd.Pressure30 = as.numeric(Hyd.Pressure3 == 0)) 
+# > select(-c('Hyd.Pressure1', 'Hyd.Pressure2', 'Hyd.Pressure3'))
+```
+
+```{r}
+#Winsorize_2 <- function(x){Winsorize(x, val = quantile(x, probs = c(0.001, 0.999), na.rm = FALSE))}
+student_train <-lapply(student_train, Winsorize)#, na.rm = TRUE, probs = c(0.001, 0.999))
+student_train <- bind_cols(BC, student_train)
+```
+
+
+
+```{r}
+
 library(earth)
-y = student_train_2$PH
-x = student_train_2 |> select(-PH)
+y = student_train$PH
+x = student_train |> select(-PH)
 
 y_eval = student_eval_2$PH
 x_eval = student_eval_2 |> select(-PH)
 
 marsFit2 <- earth(x, y, degree = 2)
-summary(marsFit2)
+temp <- summary(marsFit2)
+```
+
+```{r, include=FALSE}
+hyper_grid <- expand.grid(
+  degree = 3:6, 
+  nprune = seq(20, 60, length.out = 10) %>% floor()
+  )
+set.seed(175175327)
+marsModel <- train(x = x,
+                   y = y,
+                   method = "earth",
+                   metric = 'RMSE',
+                   tuneGrid = hyper_grid,
+                   trControl = trainControl(method = "cv", number = 10))
+marsModel
+```
+
+```{r}
+library(caret)
+set.seed(175175327)
+folds <-  createFolds(y = y, k = 10)#, type = "random")
+
+    model_results <-  data.frame(R_squared = numeric(10))
+
+    for (i in 1:10) {
+
+        x_data <- x[(-folds[[i]]), ]  # Training data for current fold
+
+        y_data <- y[(-folds[[i]])]   # Test data for current fold
+
+        
+
+        mars_model <- earth(x = x_data, y = y_data)
+
+        
+
+        #model_results[i, 'R_squared'] <- summary(mars_model)$rsq
+        
+        test_data <- x[(folds[[i]]), ]
+        target_data <- y[(folds[[i]])]
+        
+        predictions <- predict(mars_model, newdata = test_data)
+
+        model_results[i, "RMSE"] <-  sqrt(mean((predictions - target_data)^2))
+#         r2_general <-function(preds,actual){ 
+#   return(1- sum((preds - actual) ^ 2)/sum((actual - mean(actual))^2))
+# }
+        #RSQUARE = function(y_actual,y_predict){
+        #cor(y_actual,y_predict)^2}
+        res <- caret::postResample(predictions, target_data)
+        model_results[i, "R_squared"] <-  res[2]
+
+    }
+    
+    model_results
 ```
 
 ```{r}
 plotmo(marsFit2)
 ```
+
+```{r}
+library(caret)
+set.seed(175175327)
+
+x$Oxygen.Filler[x$Oxygen.Filler > 0.25] <- 0.25
+#y[y==0] <- 8.5
+
+folds <-  createFolds(y = y, k = 10)#, type = "random")
+
+    model_results <-  data.frame(R_squared = numeric(10))
+ 
+
+    for (i in 1:10) {
+
+        x_data <- x[(-folds[[i]]), ]  # Train Predictor data for current fold
+
+        y_data <- y[(-folds[[i]])]   # Train Target data for current fold
+
+        
+
+        mars_model <- earth(x = x_data, y = y_data, degree = 5, nprune = 60)
+ 
+        print(summary(mars_model))
+
+        
+
+        model_results[i, 'R_squared_train'] <- summary(mars_model)$rsq
+        
+        test_data <- x[(folds[[i]]), ] # Test Predictor data for current fold
+        target_data <- y[(folds[[i]])] # Test Target data for current fold
+        
+        predictions <- predict(mars_model, newdata = test_data)
+
+        model_results[i, "RMSE"] <-  sqrt(mean((predictions - target_data)^2))
+
+        res <- caret::postResample(predictions, target_data)
+        model_results[i, "R_squared_test"] <-  res[2]
+
+    }
+    
+    model_results
+```
+
 
 ##### Lastly we make some predictions with our evaluation dataset
 
