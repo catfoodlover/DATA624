@@ -396,6 +396,7 @@ library(caret)
 set.seed(175175327)
 
 x$Oxygen.Filler[x$Oxygen.Filler > 0.25] <- 0.25
+x_eval$Oxygen.Filler[x_eval$Oxygen.Filler > 0.25] <- 0.25
 #y[y==0] <- 8.5
 
 folds <-  createFolds(y = y, k = 10)#, type = "random")
